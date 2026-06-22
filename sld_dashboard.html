@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SCADA Live</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:'Segoe UI',system-ui,sans-serif;padding:16px}
+
+/* ── Header ── */
+#head{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:16px}
+#head h1{font-size:20px;font-weight:700;color:#38bdf8;letter-spacing:.5px}
+#head #ts{font-size:12px;color:#64748b;font-family:monospace}
+#head #stat{padding:3px 12px;border-radius:4px;font-size:11px;font-weight:700;font-family:monospace}
+.on{background:#065f46;color:#6ee7b7}
+.off{background:#7f1d1d;color:#fca5a5}
+
+/* ── Summary KPI row ── */
+#kpi-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.kpi{background:#1e293b;border-radius:10px;padding:14px 20px;min-width:150px;flex:1;border-left:4px solid #334155}
+.kpi .lbl{font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.kpi .val{font-size:22px;font-weight:700;font-family:monospace}
+.kpi .sub{font-size:11px;color:#64748b;margin-top:2px}
+
+/* ── Substation groups ── */
+.sub{background:#1e293b;border-radius:8px;margin-bottom:12px;overflow:hidden}
+.sub-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#334155;cursor:pointer}
+.sub-hdr h2{font-size:14px;font-weight:700;color:#e2e8f0}
+.sub-hdr .sub-meta{font-size:11px;color:#94a3b8;font-family:monospace}
+.sub-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;padding:12px}
+
+/* ── Feeder cards ── */
+.fdr{background:#0f172a;border-radius:8px;padding:12px 14px;border-left:4px solid #334155;transition:.15s}
+.fdr:hover{background:#1a2332}
+.fdr .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.fdr .hdr .nm{font-size:13px;font-weight:700;font-family:monospace}
+.fdr .hdr .tag{font-size:9px;padding:2px 8px;border-radius:3px;font-weight:600}
+.tag-on{background:#064e3b;color:#6ee7b7}
+.tag-tr{background:#7f1d1d;color:#fca5a5}
+.tag-off{background:#1e293b;color:#64748b}
+.fdr .row{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;font-family:monospace}
+.fdr .row span{white-space:nowrap}
+.fdr .v{color:#4ade80} .fdr .y{color:#fbbf24} .fdr .r{color:#f87171} .fdr .m{color:#94a3b8}
+.fdr .tripped .v,.fdr .tripped .y,.fdr .tripped .r{color:#fca5a5!important}
+
+/* ── Responsive ── */
+@media(max-width:600px){
+  .sub-body{grid-template-columns:1fr}
+  .kpi{min-width:120px}
+  #kpi-row{flex-direction:column}
+}
+</style>
+</head>
+<body>
+
+<div id="head">
+  <h1>SCADA LIVE</h1>
+  <span id="ts">—</span>
+  <span id="stat" class="off">OFFLINE</span>
+</div>
+
+<div id="kpi-row"></div>
+<div id="subs-container"></div>
+
+<script>
+// ── Lookup tables (mirrors sld_client.py) ──
+const SUB_NAMES={M1:"MATALAM",M2:"PACO",M3:"BAGONG SILANG",M4:"KIDAPAWAN",M5:"BAGONTAPAY",M6:"KABACAN",M7:"ANTIPAS",M8:"CARMEN",M9:"KALASUYAN",M10:"TULUNAN"};
+const SUB_ORDER=["M9","M2","M7","M4","M3","M1","M6","M8","M10","M5"];
+const TAC_SUBS=new Set(["M5","M10"]);
+const FEEDER_GROUPS={M1:["f11","f12","f13"],M2:["f21","f22","f23"],M3:["f31","f32","f33","f34"],M4:["f41","f42","f43","f44"],M5:["f51","f52","f53","f54"],M6:["f61","f62","f63","f64","f65"],M7:["f71","f72","f73"],M8:["f82","f83","f84"],M9:["f91","f92","f93","f94","f95"],M10:["f101","f102","f103","f104"]};
+
+let lastData=null;
+const kpiRow=document.getElementById("kpi-row");
+const subsEl=document.getElementById("subs-container");
+
+// ── Render substation structure (static, one time) ──
+function renderStructure(){
+  let html="";
+  for(const sid of SUB_ORDER){
+    const nm=SUB_NAMES[sid]||sid;
+    const fids=FEEDER_GROUPS[sid]||[];
+    const cnt=fids.length;
+    html+='<div class="sub" id="sub-'+sid+'">'+
+      '<div class="sub-hdr"><h2>'+sid+' — '+nm+'</h2><span class="sub-meta">'+cnt+' feeders</span></div>'+
+      '<div class="sub-body" id="subb-'+sid+'">';
+    for(const fid of fids){
+      html+='<div class="fdr" id="fdr-'+fid+'" data-fid="'+fid+'">'+
+        '<div class="hdr"><span class="nm" id="nm-'+fid+'">'+fid.toUpperCase()+'</span><span class="tag" id="tag-'+fid+'">—</span></div>'+
+        '<div class="row" id="row-'+fid+'"><span class="m">—</span></div></div>';
+    }
+    html+='</div></div>';
+  }
+  subsEl.innerHTML=html;
+}
+
+// ── Update everything from data ──
+function updateUI(data){
+  if(!data?.data)return;
+  const readings=data.data.readings||{};
+  const hv69kv=data.data.hv69kv||{};
+
+  // Compute totals
+  let sysKW=0,sysKVAR=0,apoKW=0,tacKW=0,active=0,tripped=0,total=0;
+  for(const[fid,r]of Object.entries(readings)){
+    total++;
+    sysKW+=r.p||0; sysKVAR+=r.q||0;
+    const sid=(r.sub_id||"").toUpperCase();
+    if(TAC_SUBS.has(sid))tacKW+=r.p||0; else apoKW+=r.p||0;
+    if(r.tripped)tripped++; else if(r.has_voltage||(r.p||0)>1)active++;
+  }
+
+  // ── KPI row ──
+  const pct=sysKW>0?Math.min(100,(sysKW/100000)*100):0;
+  kpiRow.innerHTML=
+    '<div class="kpi" style="border-left-color:#38bdf8"><div class="lbl">System kW Demand</div><div class="val" style="color:'+(sysKW>80000?"#f87171":sysKW>60000?"#fbbf24":"#4ade80")+'">'+fmt(sysKW)+'</div><div class="sub">'+pct.toFixed(1)+'% of 100 MW</div></div>'+
+    '<div class="kpi" style="border-left-color:#a78bfa"><div class="lbl">System kVAR Demand</div><div class="val" style="color:#a78bfa">'+fmt(sysKVAR)+'</div><div class="sub">'+Math.abs(sysKW>0?sysKVAR/sysKW*100:0).toFixed(1)+'% of kW</div></div>'+
+    '<div class="kpi" style="border-left-color:#2563eb"><div class="lbl">NGCP — APO</div><div class="val" style="color:#60a5fa">'+fmt(apoKW)+'</div><div class="sub">'+objLen(NGCP_APO_SUBS())+' substations</div></div>'+
+    '<div class="kpi" style="border-left-color:#1A56DB"><div class="lbl">NGCP — TACURONG</div><div class="val" style="color:'+(tacKW>0?"#60a5fa":"#64748b")+'">'+fmt(tacKW)+'</div><div class="sub">'+TAC_SUBS.size+' substation'+(TAC_SUBS.size>1?'s':'')+'</div></div>'+
+    '<div class="kpi" style="border-left-color:'+(tripped?'#ef4444':'#16a34a')+'"><div class="lbl">Feeders</div><div class="val" style="color:'+(tripped?'#f87171':'#4ade80')+'">'+active+' <span style="font-size:14px;color:#64748b">/ '+total+'</span></div><div class="sub">'+(tripped?tripped+' tripped':'0 tripped')+'</div></div>';
+
+  // ── HV 69kV labels in sub headers ──
+  for(const[sid,v]of Object.entries(hv69kv)){
+    const hdr=document.querySelector("#sub-"+sid.toUpperCase()+" .sub-meta");
+    if(hdr)hdr.textContent=(v?.kv69||0).toFixed(1)+' kV  '+(v?.hz||0).toFixed(2)+' Hz';
+  }
+
+  // ── Feeder cards ──
+  for(const[fid,r]of Object.entries(readings)){
+    const tc=r.tripped,nc=r.no_connection,act=r.has_voltage&&r.has_current;
+    const card=document.getElementById("fdr-"+fid);
+    const nmEl=document.getElementById("nm-"+fid);
+    const tagEl=document.getElementById("tag-"+fid);
+    const rowEl=document.getElementById("row-"+fid);
+    if(!card||!tagEl||!rowEl)continue;
+
+    let cls,tagCls,tagTxt,clr;
+    if(nc||(!r.has_voltage&&!r.has_current)){cls="m";tagCls="tag-off";tagTxt="OFF";clr="#9ca3af";}
+    else if(tc){cls="r";tagCls="tag-tr";tagTxt="TRIPPED";clr="#dc2626";}
+    else if(act){cls="v";tagCls="tag-on";tagTxt="ON";clr="#16a34a";}
+    else{cls="y";tagCls="tag-on";tagTxt="IDLE";clr="#eab308";}
+
+    card.style.borderLeftColor=clr;
+    if(tc)card.classList.add("tripped");else card.classList.remove("tripped");
+    tagEl.className="tag "+tagCls;tagEl.textContent=tagTxt;
+    if(nmEl)nmEl.style.color=clr;
+
+    rowEl.innerHTML=
+      '<span class="'+cls+'">'+(r.kv||0).toFixed(2)+' kV</span>'+
+      '<span class="'+cls+'">L1:'+(r.i1||0).toFixed(1)+' L2:'+(r.i2||0).toFixed(1)+' L3:'+(r.i3||0).toFixed(1)+' A</span>'+
+      '<span class="'+cls+'">'+(r.p||0).toFixed(1)+' kW</span>'+
+      '<span class="'+cls+'">PF '+(r.pf||0).toFixed(3)+'</span>';
+  }
+}
+
+function fmt(v){return (v||0).toLocaleString(void 0,{maximumFractionDigits:1})}
+function objLen(o){let n=0;for(const k in o)if(Object.prototype.hasOwnProperty.call(o,k))n++;return n}
+function NGCP_APO_SUBS(){const s={};for(const k in SUB_NAMES)if(!TAC_SUBS.has(k))s[k]=1;return s}
+
+// ── Poll ──
+async function poll(){
+  try{
+    const r=await fetch("/data");
+    if(!r.ok)throw Error(r.status);
+    const d=await r.json();
+    if(JSON.stringify(d)===JSON.stringify(lastData))return;
+    lastData=d;
+    document.getElementById("ts").textContent=new Date().toLocaleTimeString();
+    document.getElementById("stat").className="on";
+    document.getElementById("stat").textContent="LIVE";
+    updateUI(d);
+  }catch(e){
+    document.getElementById("stat").className="off";
+    document.getElementById("stat").textContent="OFFLINE";
+  }
+}
+
+renderStructure();
+setInterval(poll,2000);poll();
+</script>
+</body></html>
