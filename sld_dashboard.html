@@ -24,8 +24,13 @@ body{background:#0f172a;color:#e2e8f0;font-family:'Segoe UI',system-ui,sans-seri
 /* ── Substation groups ── */
 .sub{background:#1e293b;border-radius:8px;margin-bottom:12px;overflow:hidden}
 .sub-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#334155;cursor:pointer}
-.sub-hdr h2{font-size:14px;font-weight:700;color:#e2e8f0}
-.sub-hdr .sub-meta{font-size:11px;color:#94a3b8;font-family:monospace}
+.sub-hdr .sub-l{display:flex;flex-direction:column;gap:2px}
+.sub-hdr .sub-l h2{font-size:14px;font-weight:700;color:#e2e8f0}
+.sub-hdr .sub-l .sub-meta{font-size:11px;color:#94a3b8;font-family:monospace}
+.sub-hdr .sub-r{text-align:right;font-family:monospace;font-size:12px;line-height:1.7}
+.sub-hdr .sub-r .kv13{color:#4ade80;font-weight:600}
+.sub-hdr .sub-r .kw{color:#60a5fa}
+.sub-hdr .sub-r .kv69{color:#38bdf8;font-size:11px}
 .sub-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;padding:12px}
 
 /* ── Feeder cards ── */
@@ -80,7 +85,7 @@ function renderStructure(){
     const fids=FEEDER_GROUPS[sid]||[];
     const cnt=fids.length;
     html+='<div class="sub" id="sub-'+sid+'">'+
-      '<div class="sub-hdr"><h2>'+sid+' — '+nm+'</h2><span class="sub-meta">'+cnt+' feeders</span></div>'+
+      '<div class="sub-hdr"><div class="sub-l"><h2>'+sid+' — '+nm+'</h2><span class="sub-meta">'+cnt+' feeders</span></div><div class="sub-r" id="subr-'+sid+'"><span class="m">—</span></div></div>'+
       '<div class="sub-body" id="subb-'+sid+'">';
     for(const fid of fids){
       html+='<div class="fdr" id="fdr-'+fid+'" data-fid="'+fid+'">'+
@@ -117,10 +122,33 @@ function updateUI(data){
     '<div class="kpi" style="border-left-color:#1A56DB"><div class="lbl">NGCP — TACURONG</div><div class="val" style="color:'+(tacKW>0?"#60a5fa":"#64748b")+'">'+fmt(tacKW)+'</div><div class="sub">'+TAC_SUBS.size+' substation'+(TAC_SUBS.size>1?'s':'')+'</div></div>'+
     '<div class="kpi" style="border-left-color:'+(tripped?'#ef4444':'#16a34a')+'"><div class="lbl">Feeders</div><div class="val" style="color:'+(tripped?'#f87171':'#4ade80')+'">'+active+' <span style="font-size:14px;color:#64748b">/ '+total+'</span></div><div class="sub">'+(tripped?tripped+' tripped':'0 tripped')+'</div></div>';
 
-  // ── HV 69kV labels in sub headers ──
-  for(const[sid,v]of Object.entries(hv69kv)){
-    const hdr=document.querySelector("#sub-"+sid.toUpperCase()+" .sub-meta");
-    if(hdr)hdr.textContent=(v?.kv69||0).toFixed(1)+' kV  '+(v?.hz||0).toFixed(2)+' Hz';
+  // ── Per-substation stats (13.2kV from 2nd feeder, kW sum, 69kV for M6/M8) ──
+  for(const sid of SUB_ORDER){
+    const fids=FEEDER_GROUPS[sid]||[];
+    const subEl=document.getElementById("subr-"+sid);
+    if(!subEl)continue;
+
+    // 13.2kV from 2nd feeder
+    const f2=fids[1];
+    const r2=f2?readings[f2]:null;
+    const kv13=r2&&r2.kv?r2.kv:null;
+
+    // kW sum
+    let kwSum=0;
+    for(const fid of fids){const r=readings[fid];if(r)kwSum+=r.p||0;}
+
+    // 69kV for M6/M8
+    const hv=hv69kv["m"+sid.slice(1).toLowerCase()]||hv69kv[sid.toLowerCase()];
+    let parts=[];
+    if(kv13!==null)parts.push('<span class="kv13">'+kv13.toFixed(2)+' kV</span>');
+    parts.push('<span class="kw">'+fmt(kwSum)+' kW</span>');
+    if(hv&&hv.v69kv!=null){
+      const hvKv=hv.v69kv/1000;
+      const hvClr=65<=hvKv&&hvKv<=73?'#4ade80':'#fbbf24';
+      const hz=hv.freq!=null?hv.freq.toFixed(2)+' Hz':'';
+      parts.push('<span class="kv69" style="color:'+hvClr+'">'+hvKv.toFixed(3)+' kV'+(hz?' '+hz:'')+'</span>');
+    }
+    subEl.innerHTML=parts.join(' &nbsp;|&nbsp; ');
   }
 
   // ── Feeder cards ──
@@ -144,7 +172,6 @@ function updateUI(data){
     if(nmEl)nmEl.style.color=clr;
 
     rowEl.innerHTML=
-      '<span class="'+cls+'">'+(r.kv||0).toFixed(2)+' kV</span>'+
       '<span class="'+cls+'">L1:'+(r.i1||0).toFixed(1)+' L2:'+(r.i2||0).toFixed(1)+' L3:'+(r.i3||0).toFixed(1)+' A</span>'+
       '<span class="'+cls+'">'+(r.p||0).toFixed(1)+' kW</span>'+
       '<span class="'+cls+'">PF '+(r.pf||0).toFixed(3)+'</span>';
